@@ -1,25 +1,166 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Empathic Voice Interface</title>
-  </head>
-  <body>
-    <div id="app">
-      <div id="btn-container">
-        <button id="start-btn">Start</button>
-        <button id="stop-btn" disabled="true">Stop</button>
-      </div>
-      <div id="heading-container">
-        <h2>Empathic Voice Interface (EVI)</h2>
-        <p>
-          Welcome to our TypeScript sample implementation of the Empathic Voice Interface!
-          Click the "Start" button and begin talking to interact with EVI.
-        </p>
-      </div>
-      <div id="chat"></div>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+configId: '63a7dcab-7322-45f0-84c8-86c78e8fa97b',
+        resumedChatGroupId: chatGroupId,
+      });
+
+      socket.on('open', handleWebSocketOpenEvent);
+      socket.on('message', handleWebSocketMessageEvent);
+      socket.on('error', handleWebSocketErrorEvent);
+      socket.on('close', handleWebSocketCloseEvent);
+
+      toggleBtnStates();
+    }
+
+    function disconnect() {
+      toggleBtnStates();
+      stopAudio();
+      recorder?.stop();
+      recorder = null;
+      audioStream = null;
+      connected = false;
+
+      if (!resumeChats) {
+        chatGroupId = undefined;
+      }
+
+      socket?.close();
+    }
+
+    async function captureAudio() {
+      audioStream = await getAudioStream();
+      ensureSingleValidAudioTrack(audioStream);
+      recorder = new MediaRecorder(audioStream, { mimeType });
+      recorder.ondataavailable = async ({ data }) => {
+        if (data.size < 1) return;
+        const encodedAudioData = await convertBlobToBase64(data);
+        const audioInput = { data: encodedAudioData };
+        socket?.sendAudioInput(audioInput);
+      };
+      const timeSlice = 100;
+      recorder.start(timeSlice);
+    }
+
+    function playAudio() {
+      if (!audioQueue.length || isPlaying) return;
+      isPlaying = true;
+      const audioBlob = audioQueue.shift();
+      if (!audioBlob) return;
+      const audioUrl = URL.createObjectURL(audioBlob);
+      currentAudio = new Audio(audioUrl);
+      currentAudio.play();
+      currentAudio.onended = () => {
+        isPlaying = false;
+        if (audioQueue.length) playAudio();
+      };
+    }
+
+    function stopAudio() {
+      currentAudio?.pause();
+      currentAudio = null;
+      isPlaying = false;
+      audioQueue.length = 0;
+    }
+
+    async function handleWebSocketOpenEvent() {
+      console.log('Web socket connection opened');
+      connected = true;
+      await captureAudio();
+    }
+
+    async function handleWebSocketMessageEvent(message) {
+      switch (message.type) {
+        case 'chat_metadata':
+          chatGroupId = message.chatGroupId;
+          break;
+        case 'user_message':
+        case 'assistant_message':
+          const { role, content } = message.message;
+          const topThreeEmotions = extractTopThreeEmotions(message);
+          appendMessage(role, content ?? '', topThreeEmotions);
+          break;
+        case 'audio_output':
+          const audioOutput = message.data;
+          const blob = convertBase64ToBlob(audioOutput, mimeType);
+          audioQueue.push(blob);
+          if (audioQueue.length >= 1) playAudio();
+          break;
+        case 'user_interruption':
+          stopAudio();
+          break;
+      }
+    }
+
+    function handleWebSocketErrorEvent(error) {
+      console.error(error);
+    }
+
+    async function handleWebSocketCloseEvent() {
+      if (connected) await connect();
+      console.log('Web socket connection closed');
+    }
+
+    function appendMessage(role, content, topThreeEmotions) {
+      const chatCard = new ChatCard({
+        role,
+        timestamp: new Date().toLocaleTimeString(),
+        content,
+        scores: topThreeEmotions,
+      });
+      chat?.appendChild(chatCard.render());
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    }
+
+    function toggleBtnStates() {
+      if (startBtn) startBtn.disabled = !startBtn.disabled;
+      if (stopBtn) stopBtn.disabled = !stopBtn.disabled;
+    }
+
+    function extractTopThreeEmotions(message) {
+      const scores = message.models.prosody?.scores;
+      const scoresArray = Object.entries(scores || {});
+      scoresArray.sort((a, b) => b[1] - a[1]);
+      const topThreeEmotions = scoresArray.slice(0, 3).map(([emotion, score]) => ({
+        emotion,
+        score: (Math.round(Number(score) * 100) / 100).toFixed(2),
+      }));
+      return topThreeEmotions;
+    }
+
+    class ChatCard {
+      constructor(message) {
+        this.message = message;
+      }
+
+      createScoreItem(score) {
+        const scoreItem = document.createElement('div');
+        scoreItem.className = 'score-item';
+        scoreItem.innerHTML = `${score.emotion}: <strong>${score.score}</strong>`;
+        return scoreItem;
+      }
+
+      render() {
+        const card = document.createElement('div');
+        card.className = `chat-card ${this.message.role}`;
+        const role = document.createElement('div');
+        role.className = 'role';
+        role.textContent = this.message.role.charAt(0).toUpperCase() + this.message.role.slice(1);
+        const timestamp = document.createElement('div');
+        timestamp.className = 'timestamp';
+        timestamp.innerHTML = `<strong>${this.message.timestamp}</strong>`;
+        const content = document.createElement('div');
+        content.className = 'content';
+        content.textContent = this.message.content;
+        const scores = document.createElement('div');
+        scores.className = 'scores';
+        this.message.scores.forEach((score) => {
+          scores.appendChild(this.createScoreItem(score));
+        });
+        card.appendChild(role);
+        card.appendChild(timestamp);
+        card.appendChild(content);
+        card.appendChild(scores);
+        return card;
+      }
+    }
+  </script>
+</body>
 </html>
